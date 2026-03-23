@@ -1,0 +1,53 @@
+name: isac
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.10
+
+  # Científico básico
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - h5py
+
+  # Machine Learning clásico
+  - scikit-learn
+
+  # Jupyter
+  - jupyterlab
+  - ipykernel
+
+  # Utilidades
+  - tqdm
+  - pip
+
+  # (opcional pero recomendable)
+  - seaborn
+
+  # Pip packages (clave para ISAC)
+  - pip:
+      # Deep Learning / simulación
+      - tensorflow==2.15
+      - sionna
+
+      # PyTorch (para procesado alternativo)
+      - torch
+      - torchvision
+      - torchaudio
+
+      # Procesado señal
+      - librosa
+      - pywavelets
+
+      # Visualización avanzada
+      - plotly
+
+      # Manejo de datos
+      - xarray
+
+      # SDR (interfaz Python, drivers aparte)
+      - uhd
