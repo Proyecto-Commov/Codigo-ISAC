@@ -8,6 +8,14 @@ Bienvenido al repositorio del proyecto **ISAC** (*Integrated Sensing and Communi
 
 **Equipo de Procesado de Señal**
 
+- Hugo Alcalá Garcés
+- Miguel Hernández Martínez
+- Llorenç Hueso Martínez
+- Joan Daniel Máñez Marqués
+- David Martínez Pérez
+- Jorge Reig Aquino
+- Mario Sotos Alonso
+
 ---
 
 ## 📚 Asignatura
@@ -28,7 +36,8 @@ El objetivo de este proyecto es estudiar, diseñar e implementar técnicas de pr
 
 ```
 Codigo-ISAC/
-└── README.md       # Este archivo
+├── README.md          # Este archivo
+└── environment.yml    # Dependencias (Conda)
 ```
 
 ---
@@ -40,6 +49,21 @@ Clona el repositorio:
 ```bash
 git clone https://github.com/MrHugals/Codigo-ISAC.git
 cd Codigo-ISAC
+```
+
+### Crear el entorno (Conda)
+
+Se ha añadido un fichero de dependencias para crear un entorno de Conda: `environment.yml`.
+
+```bash
+conda env create -f environment.yml
+conda activate isac
+```
+
+Si ya tienes el entorno creado y quieres actualizar dependencias:
+
+```bash
+conda env update -f environment.yml --prune
 ```
 
 ---
