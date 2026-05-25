@@ -13,6 +13,9 @@ IQStorageFormat = Literal[
     "sc8_interleaved",
 ]
 
+# =============================================================================
+# Configuración YAML
+# =============================================================================
 
 def load_modulator_yaml(yaml_path: str | Path) -> dict[str, Any]:
     """
@@ -31,6 +34,10 @@ def load_modulator_yaml(yaml_path: str | Path) -> dict[str, Any]:
 
     return cfg
 
+
+# =============================================================================
+# Lectura IQ y demodulación OFDM
+# =============================================================================
 
 def _read_iq_with_format(
     bin_path: str | Path,
@@ -128,7 +135,7 @@ def _cp_tail_correlation_score(
 
 def infer_iq_storage_format(
     bin_path: str | Path,
-    yaml_path: str | Path,
+    cfg: dict[str, Any],
 ) -> Literal["complex64", "sc16_interleaved", "sc8_interleaved"]:
     """
     Intenta inferir el formato real de almacenamiento del .bin.
@@ -136,8 +143,6 @@ def infer_iq_storage_format(
     No se fía ciegamente de wire_format_tx/rx, porque eso describe el formato
     de transporte UHD, no necesariamente cómo se ha guardado el fichero.
     """
-    cfg = load_modulator_yaml(yaml_path)
-
     fft_size = int(cfg["fft_size"])
     cp_len = int(cfg["cp_length"])
 
@@ -171,7 +176,7 @@ def infer_iq_storage_format(
 
 def read_usrp_iq_bin(
     bin_path: str | Path,
-    yaml_path: str | Path,
+    cfg: dict[str, Any],
     *,
     storage_format: IQStorageFormat = "auto",
     trim_to_complete_frames: bool = False,
@@ -183,7 +188,7 @@ def read_usrp_iq_bin(
 
     Entrada:
         - bin_path: ruta al .bin, por ejemplo iq_rx.bin o iq_tx.bin
-        - yaml_path: ruta al Modulator.yaml
+        - cfg: configuración del modulador OFDM
 
     Salida:
         - iq: vector complejo 1D, sin quitar CP y sin FFT
@@ -195,8 +200,6 @@ def read_usrp_iq_bin(
           un número entero de tramas OFDM según el YAML.
         - El eje temporal se calcula como t[n] = n / sample_rate.
     """
-    cfg = load_modulator_yaml(yaml_path)
-
     fft_size = int(cfg["fft_size"])
     cp_len = int(cfg["cp_length"])
     num_symbols = int(cfg["num_symbols"])
@@ -206,7 +209,7 @@ def read_usrp_iq_bin(
     samples_per_frame = samples_per_symbol * num_symbols
 
     if storage_format == "auto":
-        fmt = infer_iq_storage_format(bin_path, yaml_path)
+        fmt = infer_iq_storage_format(bin_path, cfg)
     else:
         fmt = storage_format
 
@@ -249,7 +252,7 @@ def read_usrp_iq_bin(
 
 def demodulate_ofdm_iq(
     iq: np.ndarray,
-    yaml_path: str | Path,
+    cfg: dict[str, Any],
     *,
     n_symbols: int | None = None,
     start_sample: int = 0,
@@ -269,8 +272,8 @@ def demodulate_ofdm_iq(
         Vector complejo 1D con la señal OFDM cruda en tiempo.
         Es decir, salida de read_usrp_iq_bin(...).
 
-    yaml_path : str | Path
-        Ruta al Modulator.yaml.
+    cfg : dict[str, Any]
+        Configuración del modulador OFDM.
 
     n_symbols : int | None
         Número de símbolos OFDM a demodular.
@@ -309,8 +312,6 @@ def demodulate_ofdm_iq(
     subcarrier_axis : np.ndarray, opcional
         Eje frecuencial de subportadoras [Hz].
     """
-    cfg = load_modulator_yaml(yaml_path)
-
     fft_size = int(cfg["fft_size"])
     cp_len = int(cfg["cp_length"])
     sample_rate = float(cfg["sample_rate"])
@@ -395,6 +396,10 @@ def demodulate_ofdm_iq(
     return grid
 
 
+# =============================================================================
+# Estimación de canal
+# =============================================================================
+
 def estimate_channel_grid(
     X: np.ndarray,
     Y: np.ndarray,
@@ -475,6 +480,10 @@ def estimate_channel_grid(
 
     return H
 
+
+# =============================================================================
+# Representación gráfica
+# =============================================================================
 
 def plot_ofdm_grid(
     grid,
@@ -635,636 +644,3 @@ def plot_ofdm_grid(
 
     plt.tight_layout()
     plt.show()
-
-
-def delay_time_ifft_from_H(
-    H: np.ndarray,
-    *,
-    modulator_cfg: dict,
-    n_subcarriers: int | None = None,
-    pilot_subcarriers: np.ndarray | None = None,
-    range_fft_size: int | None = None,
-    apply_ifftshift: bool = False,
-    distance_mode: str = "monostatic",
-    c: float = 299_792_458.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Aplica IFFT sobre el eje de subportadoras y obtiene h[tau,m],
-    devolviendo además el eje de retardo convertido a distancia.
-
-    Convención de entrada:
-        H.shape = (M, N) si H está en toda la rejilla
-        H.shape = (M, P) si H solo está en pilotos
-
-    Convención de salida:
-        h_tau_m.shape = (N_tau, M)
-        distance_axis.shape = (N_tau,)
-
-    distance_axis:
-        - si distance_mode="monostatic":
-            R = c*tau/2
-        - si distance_mode="bistatic":
-            d_excess = c*tau
-    """
-
-    H = np.asarray(H)
-
-    if H.ndim != 2:
-        raise ValueError(f"H debe tener shape (M, N) o (M, P), recibido {H.shape}")
-
-    if not np.iscomplexobj(H):
-        raise TypeError("H debe ser complejo.")
-
-    fft_size = int(modulator_cfg["fft_size"])
-    sample_rate = float(modulator_cfg["sample_rate"])
-
-    delta_f = sample_rate / fft_size
-
-    M, K = H.shape
-
-    # Caso 1: H ya está en toda la rejilla
-    if pilot_subcarriers is None:
-        H_grid = H
-        N = K
-
-    # Caso 2: H solo está definido en pilotos
-    else:
-        pilot_subcarriers = np.asarray(pilot_subcarriers, dtype=int).reshape(-1)
-
-        if pilot_subcarriers.size != K:
-            raise ValueError(
-                f"H tiene {K} columnas, pero pilot_subcarriers tiene "
-                f"{pilot_subcarriers.size} elementos."
-            )
-
-        if n_subcarriers is None:
-            n_subcarriers = fft_size
-
-        N = int(n_subcarriers)
-
-        if np.any((pilot_subcarriers < 0) | (pilot_subcarriers >= N)):
-            raise IndexError("Hay subportadoras piloto fuera de rango.")
-
-        H_grid = np.zeros((M, N), dtype=np.complex128)
-        H_grid[:, pilot_subcarriers] = H
-
-    if range_fft_size is None:
-        range_fft_size = N
-
-    if apply_ifftshift:
-        H_grid = np.fft.ifftshift(H_grid, axes=1)
-
-    # IFFT sobre subportadoras
-    h_m_tau = np.fft.ifft(H_grid, n=range_fft_size, axis=1)
-
-    # Devuelvo como h[tau,m]
-    h_tau_m = h_m_tau.T
-
-    tau_bins = np.arange(range_fft_size)
-
-    tau_axis = tau_bins / (range_fft_size * delta_f)
-
-    if distance_mode == "monostatic":
-        distance_axis = c * tau_axis / 2.0
-
-    elif distance_mode == "bistatic":
-        distance_axis = c * tau_axis
-
-    else:
-        raise ValueError("distance_mode debe ser 'monostatic' o 'bistatic'.")
-
-    return h_tau_m, distance_axis
-
-
-def compute_fs_slow_from_cfg(cfg: dict) -> float:
-    sample_rate = float(cfg["sample_rate"])
-    fft_size = int(cfg["fft_size"])
-    cp_len = int(cfg["cp_length"])
-    stride = int(cfg.get("sensing_symbol_stride", 1))
-
-    return sample_rate / (stride * (fft_size + cp_len))
-
-
-def compute_range_axis_from_cfg(
-    cfg: dict,
-    n_range_bins: int,
-    *,
-    distance_mode: str = "monostatic",
-    c: float = 299_792_458.0,
-) -> np.ndarray:
-    """
-    Calcula el eje de rango/retardo en metros a partir de Modulator.yaml.
-    """
-    sample_rate = float(cfg["sample_rate"])
-    fft_size = int(cfg["fft_size"])
-
-    delta_f = sample_rate / fft_size
-
-    tau_bins = np.arange(n_range_bins)
-    tau_axis = tau_bins / (n_range_bins * delta_f)
-
-    if distance_mode == "monostatic":
-        return c * tau_axis / 2.0
-
-    if distance_mode == "bistatic":
-        return c * tau_axis
-
-    raise ValueError("distance_mode debe ser 'monostatic' o 'bistatic'.")
-
-
-def range_doppler_from_delay_time(
-    h_tau_m: np.ndarray,
-    *,
-    modulator_cfg: dict,
-    range_axis: np.ndarray | None = None,
-    doppler_fft_size: int | None = None,
-    window_slowtime: str | None = "hann",
-    fftshift_doppler: bool = True,
-    to_db: bool = False,
-    power_floor: float = 1e-12,
-    distance_mode: str = "monostatic",
-    c: float = 299_792_458.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Calcula el mapa rango-Doppler a partir de h[tau,m].
-
-    Devuelve:
-        RD_power : shape (N_tau, N_doppler)
-        range_axis_out : eje de rango en metros
-        doppler_axis : eje Doppler en Hz
-    """
-
-    h_tau_m = np.asarray(h_tau_m)
-
-    if h_tau_m.ndim != 2:
-        raise ValueError(f"h_tau_m debe tener shape (N_tau, M), recibido {h_tau_m.shape}")
-
-    if not np.iscomplexobj(h_tau_m):
-        raise TypeError("h_tau_m debe ser complejo.")
-
-    N_tau, M = h_tau_m.shape
-
-    if range_axis is None:
-        range_axis_out = compute_range_axis_from_cfg(
-            modulator_cfg,
-            n_range_bins=N_tau,
-            distance_mode=distance_mode,
-            c=c,
-        )
-    else:
-        range_axis_out = np.asarray(range_axis)
-        if range_axis_out.ndim != 1 or range_axis_out.shape[0] != N_tau:
-            raise ValueError(
-                f"range_axis debe tener shape ({N_tau},), recibido {range_axis_out.shape}"
-            )
-
-    if doppler_fft_size is None:
-        doppler_fft_size = M
-
-    if doppler_fft_size < M:
-        raise ValueError("doppler_fft_size debe ser >= M.")
-
-    fs_slow = compute_fs_slow_from_cfg(modulator_cfg)
-
-    if window_slowtime is None or window_slowtime == "rect":
-        w = np.ones(M)
-    elif window_slowtime == "hann":
-        w = np.hanning(M)
-    elif window_slowtime == "hamming":
-        w = np.hamming(M)
-    else:
-        raise ValueError("window_slowtime debe ser None, 'rect', 'hann' o 'hamming'.")
-
-    h_win = h_tau_m * w.reshape(1, M)
-
-    RD_complex = np.fft.fft(
-        h_win,
-        n=doppler_fft_size,
-        axis=1,
-    )
-
-    if fftshift_doppler:
-        RD_complex = np.fft.fftshift(RD_complex, axes=1)
-
-    RD_power = np.abs(RD_complex) ** 2
-
-    if to_db:
-        RD_power = 10.0 * np.log10(np.maximum(RD_power, power_floor))
-
-    doppler_axis = np.fft.fftfreq(
-        doppler_fft_size,
-        d=1.0 / fs_slow,
-    )
-
-    if fftshift_doppler:
-        doppler_axis = np.fft.fftshift(doppler_axis)
-
-    return RD_power, range_axis_out, doppler_axis
-
-
-def microdoppler_from_delay_time(
-    h_tau_m: np.ndarray,
-    *,
-    modulator_cfg: dict,
-    delay_bin: int | None = None,
-    select_bin: str = "max_energy",
-    nperseg: int = 64,
-    noverlap: int = 48,
-    nfft: int | None = None,
-    window: str = "hann",
-    fftshift_doppler: bool = True,
-    to_db: bool = True,
-    power_floor: float = 1e-12,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray]:
-    """
-    Rama micro-Doppler tipo OpenISAC.
-
-    Selecciona un bin de retardo y calcula la STFT sobre su señal slow-time.
-
-    Parámetros
-    ----------
-    h_tau_m : np.ndarray
-        Matriz retardo-tiempo.
-        Shape: (N_tau, M)
-
-        - eje 0: bins de retardo/rango
-        - eje 1: símbolos OFDM / slow-time
-
-    modulator_cfg : dict
-        Diccionario leído desde Modulator.yaml mediante load_modulator_yaml(...).
-        Se usa para calcular fs_slow.
-
-    delay_bin : int | None
-        Bin de retardo seleccionado manualmente.
-        Si None, se selecciona automáticamente según select_bin.
-
-    select_bin : str
-        Método de selección automática del bin.
-        Actualmente:
-        - "max_energy": escoge el bin con mayor energía media.
-
-    nperseg : int
-        Longitud de ventana STFT.
-
-    noverlap : int
-        Solape entre ventanas STFT.
-
-    nfft : int | None
-        Tamaño de FFT de cada ventana STFT.
-        Si None, se usa nperseg.
-
-    window : str
-        Ventana STFT, por ejemplo "hann" o "hamming".
-
-    fftshift_doppler : bool
-        Si True, centra cero Doppler.
-
-    to_db : bool
-        Si True, devuelve el espectrograma en dB.
-
-    power_floor : float
-        Suelo numérico para evitar log(0).
-
-    Returns
-    -------
-    Smd : np.ndarray
-        Espectrograma micro-Doppler.
-        Shape: (N_f, N_t)
-
-    f_md : np.ndarray
-        Eje Doppler [Hz].
-        Shape: (N_f,)
-
-    t_md : np.ndarray
-        Eje temporal [s].
-        Shape: (N_t,)
-
-    selected_delay_bin : int
-        Bin de retardo usado.
-
-    slow_signal : np.ndarray
-        Señal slow-time compleja usada para calcular la STFT.
-        Shape: (M,)
-    """
-
-    h_tau_m = np.asarray(h_tau_m)
-
-    if h_tau_m.ndim != 2:
-        raise ValueError(f"h_tau_m debe tener shape (N_tau, M), recibido {h_tau_m.shape}")
-
-    if not np.iscomplexobj(h_tau_m):
-        raise TypeError("h_tau_m debe ser complejo.")
-
-    N_tau, M = h_tau_m.shape
-
-    if M < 2:
-        raise ValueError("Se necesitan al menos dos muestras slow-time.")
-
-    fs_slow = compute_fs_slow_from_cfg(modulator_cfg)
-
-    # ------------------------------------------------------------
-    # Selección del bin de retardo
-    # ------------------------------------------------------------
-    if delay_bin is None:
-        if select_bin == "max_energy":
-            energy_per_bin = np.mean(np.abs(h_tau_m) ** 2, axis=1)
-            delay_bin = int(np.argmax(energy_per_bin))
-        else:
-            raise ValueError("select_bin solo admite 'max_energy'.")
-
-    if not (0 <= delay_bin < N_tau):
-        raise IndexError(f"delay_bin={delay_bin} fuera de rango [0, {N_tau - 1}].")
-
-    slow_signal = h_tau_m[delay_bin, :]
-
-    # ------------------------------------------------------------
-    # Parámetros STFT
-    # ------------------------------------------------------------
-    if nfft is None:
-        nfft = nperseg
-
-    if nperseg > M:
-        raise ValueError(
-            f"nperseg={nperseg} no puede ser mayor que la longitud slow-time M={M}."
-        )
-
-    if nfft < nperseg:
-        raise ValueError("nfft debe ser >= nperseg.")
-
-    if noverlap < 0 or noverlap >= nperseg:
-        raise ValueError("noverlap debe cumplir 0 <= noverlap < nperseg.")
-
-    # ------------------------------------------------------------
-    # STFT
-    # ------------------------------------------------------------
-    f_md, t_md, Zxx = stft(
-        slow_signal,
-        fs=fs_slow,
-        window=window,
-        nperseg=nperseg,
-        noverlap=noverlap,
-        nfft=nfft,
-        return_onesided=False,
-        boundary=None,
-        padded=False,
-    )
-
-    Smd = np.abs(Zxx) ** 2
-
-    if fftshift_doppler:
-        Smd = np.fft.fftshift(Smd, axes=0)
-        f_md = np.fft.fftshift(f_md)
-
-    if to_db:
-        Smd = 10.0 * np.log10(np.maximum(Smd, power_floor))
-
-    return Smd, f_md, t_md, delay_bin, slow_signal
-
-
-def plot_rd_and_microdoppler(
-    RD: np.ndarray,
-    range_axis: np.ndarray,
-    doppler_axis: np.ndarray,
-    Smd: np.ndarray,
-    f_md: np.ndarray,
-    t_md: np.ndarray,
-    *,
-    delay_bin: int | None = None,
-    rd_in_db: bool = True,
-    microdoppler_in_db: bool = True,
-    range_limits: tuple[float, float] | None = None,
-    doppler_limits: tuple[float, float] | None = None,
-    md_doppler_limits: tuple[float, float] | None = None,
-    figsize: tuple[float, float] = (14, 10),
-    cmap_rd: str = "viridis",
-    cmap_md: str = "viridis",
-    aspect_rd: str = "auto",
-    aspect_md: str = "auto",
-    show_colorbars: bool = True,
-    title: str | None = None,
-):
-    """
-    Representa simultáneamente:
-        1) mapa rango-Doppler
-        2) espectrograma micro-Doppler
-
-    Además, si se proporciona delay_bin, marca el bin dominante en el
-    mapa rango-Doppler y muestra su distancia en metros.
-
-    Parámetros
-    ----------
-    RD : np.ndarray
-        Mapa rango-Doppler.
-        Shape: (N_range, N_doppler)
-
-    range_axis : np.ndarray
-        Eje de rango en metros.
-        Shape: (N_range,)
-
-    doppler_axis : np.ndarray
-        Eje Doppler del mapa rango-Doppler en Hz.
-        Shape: (N_doppler,)
-
-    Smd : np.ndarray
-        Espectrograma micro-Doppler.
-        Shape: (N_f, N_t)
-
-    f_md : np.ndarray
-        Eje Doppler del espectrograma micro-Doppler en Hz.
-        Shape: (N_f,)
-
-    t_md : np.ndarray
-        Eje temporal del espectrograma en segundos.
-        Shape: (N_t,)
-
-    delay_bin : int | None
-        Bin de retardo seleccionado para micro-Doppler.
-        Si se proporciona, se marca en el mapa rango-Doppler.
-
-    rd_in_db : bool
-        True si RD ya está en dB.
-
-    microdoppler_in_db : bool
-        True si Smd ya está en dB.
-
-    range_limits : tuple | None
-        Límites del eje de rango en metros: (r_min, r_max)
-
-    doppler_limits : tuple | None
-        Límites Doppler del mapa rango-Doppler: (fd_min, fd_max)
-
-    md_doppler_limits : tuple | None
-        Límites Doppler del espectrograma micro-Doppler: (fd_min, fd_max)
-
-    figsize : tuple
-        Tamaño de figura.
-
-    cmap_rd, cmap_md : str
-        Mapas de color.
-
-    show_colorbars : bool
-        Si True, muestra barras de color.
-
-    title : str | None
-        Título global de la figura.
-    """
-
-    RD = np.asarray(RD)
-    range_axis = np.asarray(range_axis)
-    doppler_axis = np.asarray(doppler_axis)
-
-    Smd = np.asarray(Smd)
-    f_md = np.asarray(f_md)
-    t_md = np.asarray(t_md)
-
-    if RD.ndim != 2:
-        raise ValueError(f"RD debe tener shape (N_range, N_doppler), recibido {RD.shape}")
-
-    if Smd.ndim != 2:
-        raise ValueError(f"Smd debe tener shape (N_f, N_t), recibido {Smd.shape}")
-
-    if range_axis.ndim != 1 or range_axis.shape[0] != RD.shape[0]:
-        raise ValueError(
-            f"range_axis debe tener shape ({RD.shape[0]},), recibido {range_axis.shape}"
-        )
-
-    if doppler_axis.ndim != 1 or doppler_axis.shape[0] != RD.shape[1]:
-        raise ValueError(
-            f"doppler_axis debe tener shape ({RD.shape[1]},), recibido {doppler_axis.shape}"
-        )
-
-    if f_md.ndim != 1 or f_md.shape[0] != Smd.shape[0]:
-        raise ValueError(
-            f"f_md debe tener shape ({Smd.shape[0]},), recibido {f_md.shape}"
-        )
-
-    if t_md.ndim != 1 or t_md.shape[0] != Smd.shape[1]:
-        raise ValueError(
-            f"t_md debe tener shape ({Smd.shape[1]},), recibido {t_md.shape}"
-        )
-
-    dominant_distance = None
-
-    if delay_bin is not None:
-        if not (0 <= delay_bin < len(range_axis)):
-            raise IndexError(
-                f"delay_bin={delay_bin} fuera de rango [0, {len(range_axis)-1}]"
-            )
-        dominant_distance = float(range_axis[delay_bin])
-
-    fig, axes = plt.subplots(
-        2,
-        1,
-        figsize=figsize,
-        constrained_layout=True,
-    )
-
-    # ============================================================
-    # MAPA RANGO-DOPPLER
-    # ============================================================
-
-    ax0 = axes[0]
-
-    rd_extent = [
-        doppler_axis[0],
-        doppler_axis[-1],
-        range_axis[0],
-        range_axis[-1],
-    ]
-
-    im0 = ax0.imshow(
-        RD,
-        origin="lower",
-        aspect=aspect_rd,
-        extent=rd_extent,
-        cmap=cmap_rd,
-    )
-
-    ax0.set_title("Mapa rango-Doppler")
-    ax0.set_xlabel("Frecuencia Doppler [Hz]")
-    ax0.set_ylabel("Rango [m]")
-
-    if delay_bin is not None:
-        ax0.axhline(
-            dominant_distance,
-            linestyle="--",
-            linewidth=1.5,
-            color="white",
-            label=f"Bin dominante = {delay_bin}, R = {dominant_distance:.3f} m",
-        )
-        ax0.legend(loc="upper right")
-
-    if doppler_limits is not None:
-        ax0.set_xlim(*doppler_limits)
-
-    if range_limits is not None:
-        ax0.set_ylim(*range_limits)
-
-    if show_colorbars:
-        cbar0 = fig.colorbar(im0, ax=ax0)
-        cbar0.set_label("Potencia [dB]" if rd_in_db else "Potencia")
-
-    # ============================================================
-    # ESPECTROGRAMA MICRO-DOPPLER
-    # ============================================================
-
-    ax1 = axes[1]
-
-    md_extent_plot = [
-        t_md[0],
-        t_md[-1],
-        f_md[0],
-        f_md[-1],
-    ]
-
-    im1 = ax1.imshow(
-        Smd,
-        origin="lower",
-        aspect=aspect_md,
-        extent=md_extent_plot,
-        cmap=cmap_md,
-    )
-
-    if delay_bin is not None:
-        ax1.set_title(
-            f"Espectrograma micro-Doppler "
-            f"(bin dominante = {delay_bin}, R = {dominant_distance:.3f} m)"
-        )
-    else:
-        ax1.set_title("Espectrograma micro-Doppler")
-
-    ax1.set_xlabel("Tiempo [s]")
-    ax1.set_ylabel("Frecuencia Doppler [Hz]")
-
-    if md_doppler_limits is not None:
-        ax1.set_ylim(*md_doppler_limits)
-
-    if show_colorbars:
-        cbar1 = fig.colorbar(im1, ax=ax1)
-        cbar1.set_label("Potencia [dB]" if microdoppler_in_db else "Potencia")
-
-    if title is not None:
-        fig.suptitle(title)
-
-    plt.show()
-
-    return fig, axes
-
-
-def compute_fs_slow_from_cfg(
-    cfg: dict,
-) -> float:
-    """
-    Calcula la frecuencia de muestreo slow-time a partir
-    del diccionario de configuración de Modulator.yaml.
-    """
-
-    sample_rate = float(cfg["sample_rate"])
-    fft_size = int(cfg["fft_size"])
-    cp_len = int(cfg["cp_length"])
-
-    stride = int(cfg.get("sensing_symbol_stride", 1))
-
-    fs_slow = sample_rate / (stride * (fft_size + cp_len))
-
-    return fs_slow
