@@ -644,3 +644,244 @@ def plot_ofdm_grid(
 
     plt.tight_layout()
     plt.show()
+
+
+# =============================================================================
+# Función maestra: paths TX/RX/YAML -> matriz de canal H
+# =============================================================================
+
+def compute_channel_matrix_from_iq_paths(
+    tx_path: str | Path,
+    rx_path: str | Path,
+    yaml_path: str | Path,
+    *,
+    n_symbols: int | None = None,
+    start_sample_tx: int = 0,
+    start_sample_rx: int = 0,
+    storage_format_tx: IQStorageFormat = "auto",
+    storage_format_rx: IQStorageFormat = "auto",
+    fftshift: bool = False,
+    normalize_fft: bool = False,
+    eps: float = 1e-12,
+    trim_to_complete_frames: bool = True,
+    return_aux: bool = False,
+    output_order: Literal["mk", "km"] = "mk",
+    verbose: bool = True,
+):
+    """
+    Función maestra para obtener la matriz de canal OFDM H a partir de:
+
+        - tx_path: ruta a iq_tx.bin
+        - rx_path: ruta a iq_rx.bin
+        - yaml_path: ruta a Modulator.yaml
+
+    Pipeline interno
+    ----------------
+    1. Lee el YAML.
+    2. Lee la señal IQ transmitida.
+    3. Lee la señal IQ recibida.
+    4. Demodula ambas señales OFDM:
+            CP removal + FFT
+    5. Obtiene las rejillas:
+            X[m, k] = símbolo transmitido
+            Y[m, k] = símbolo recibido
+    6. Estima el canal:
+            H[m, k] = Y[m, k] / X[m, k]
+
+    Parámetros importantes
+    ----------------------
+    n_symbols:
+        Número de símbolos OFDM a procesar.
+        Si None, se usan todos los símbolos completos comunes entre TX y RX.
+
+    start_sample_tx:
+        Muestra inicial para cortar la señal TX antes de demodular.
+
+    start_sample_rx:
+        Muestra inicial para cortar la señal RX antes de demodular.
+        Si existe un desfase temporal conocido entre TX y RX, puede corregirse aquí.
+
+    storage_format_tx, storage_format_rx:
+        Formato real del .bin.
+        Opciones:
+            "auto"
+            "complex64"
+            "sc16_interleaved"
+            "sc8_interleaved"
+
+    fftshift:
+        Si False, mantiene el orden natural FFT:
+            k = 0, 1, ..., N-1
+        Esto es lo recomendable si quieres que los índices coincidan con
+        pilot_positions del YAML.
+
+    normalize_fft:
+        Si True, divide la FFT entre sqrt(N).
+        Como se aplica tanto a TX como a RX, normalmente no cambia H,
+        salvo efectos numéricos.
+
+    output_order:
+        - "mk": devuelve H con shape (M, N), es decir H[m, k].
+                Es el formato usado internamente en este archivo.
+        - "km": devuelve H con shape (N, M), es decir H[k, m].
+                Es el formato más habitual en la notación teórica.
+
+    return_aux:
+        Si False:
+            devuelve solo H.
+        Si True:
+            devuelve un diccionario con H, X, Y, máscara válida, ejes y cfg.
+
+    Salida
+    ------
+    H:
+        Matriz compleja de canal.
+
+        Si output_order="mk":
+            H.shape = (M, N)
+            H[m, k]
+
+        Si output_order="km":
+            H.shape = (N, M)
+            H[k, m]
+    """
+
+    # ------------------------------------------------------------
+    # 1. Cargar configuración
+    # ------------------------------------------------------------
+    cfg = load_modulator_yaml(yaml_path)
+
+    # ------------------------------------------------------------
+    # 2. Leer IQ TX/RX
+    # ------------------------------------------------------------
+    iq_tx = read_usrp_iq_bin(
+        tx_path,
+        cfg,
+        storage_format=storage_format_tx,
+        trim_to_complete_frames=trim_to_complete_frames,
+        return_time_axis=False,
+        verbose=verbose,
+    )
+
+    iq_rx = read_usrp_iq_bin(
+        rx_path,
+        cfg,
+        storage_format=storage_format_rx,
+        trim_to_complete_frames=trim_to_complete_frames,
+        return_time_axis=False,
+        verbose=verbose,
+    )
+
+    # ------------------------------------------------------------
+    # 3. Determinar número común de símbolos si no se especifica
+    # ------------------------------------------------------------
+    fft_size = int(cfg["fft_size"])
+    cp_len = int(cfg["cp_length"])
+    sample_rate = float(cfg["sample_rate"])
+
+    samples_per_symbol = fft_size + cp_len
+
+    tx_symbols_available = (len(iq_tx) - start_sample_tx) // samples_per_symbol
+    rx_symbols_available = (len(iq_rx) - start_sample_rx) // samples_per_symbol
+
+    if tx_symbols_available <= 0:
+        raise ValueError("La señal TX no contiene símbolos OFDM completos útiles.")
+
+    if rx_symbols_available <= 0:
+        raise ValueError("La señal RX no contiene símbolos OFDM completos útiles.")
+
+    max_common_symbols = min(tx_symbols_available, rx_symbols_available)
+
+    if n_symbols is None:
+        n_symbols_used = max_common_symbols
+    else:
+        if n_symbols <= 0:
+            raise ValueError("n_symbols debe ser positivo.")
+        n_symbols_used = min(int(n_symbols), max_common_symbols)
+
+    if verbose:
+        print("Selección de símbolos común TX/RX")
+        print(f"  Símbolos disponibles TX: {tx_symbols_available}")
+        print(f"  Símbolos disponibles RX: {rx_symbols_available}")
+        print(f"  Símbolos usados: {n_symbols_used}")
+
+    # ------------------------------------------------------------
+    # 4. Demodular TX y RX: CP removal + FFT
+    # ------------------------------------------------------------
+    X, t_sym, f_sub = demodulate_ofdm_iq(
+        iq_tx,
+        cfg,
+        n_symbols=n_symbols_used,
+        start_sample=start_sample_tx,
+        fftshift=fftshift,
+        normalize_fft=normalize_fft,
+        return_axes=True,
+        verbose=verbose,
+    )
+
+    Y = demodulate_ofdm_iq(
+        iq_rx,
+        cfg,
+        n_symbols=n_symbols_used,
+        start_sample=start_sample_rx,
+        fftshift=fftshift,
+        normalize_fft=normalize_fft,
+        return_axes=False,
+        verbose=verbose,
+    )
+
+    # ------------------------------------------------------------
+    # 5. Estimar canal H = Y / X
+    # ------------------------------------------------------------
+    H, valid_mask = estimate_channel_grid(
+        X,
+        Y,
+        eps=eps,
+        return_mask=True,
+        verbose=verbose,
+    )
+
+    # ------------------------------------------------------------
+    # 6. Eje slow-time efectivo
+    # ------------------------------------------------------------
+    symbol_duration = samples_per_symbol / sample_rate
+    fs_slow = 1.0 / symbol_duration
+
+    if verbose:
+        print("Matriz de canal obtenida")
+        print(f"  Shape H interna: {H.shape} = (símbolos, subportadoras)")
+        print(f"  Duración símbolo OFDM con CP: {symbol_duration:.9e} s")
+        print(f"  Frecuencia slow-time: {fs_slow:.3f} Hz")
+
+    # ------------------------------------------------------------
+    # 7. Orden de salida
+    # ------------------------------------------------------------
+    if output_order == "mk":
+        H_out = H
+        X_out = X
+        Y_out = Y
+        valid_mask_out = valid_mask
+    elif output_order == "km":
+        H_out = H.T
+        X_out = X.T
+        Y_out = Y.T
+        valid_mask_out = valid_mask.T
+    else:
+        raise ValueError("output_order debe ser 'mk' o 'km'.")
+
+    if not return_aux:
+        return H_out
+
+    return {
+        "H": H_out,
+        "X": X_out,
+        "Y": Y_out,
+        "valid_mask": valid_mask_out,
+        "t_sym": t_sym,
+        "f_sub": f_sub,
+        "fs_slow": fs_slow,
+        "symbol_duration": symbol_duration,
+        "cfg": cfg,
+        "n_symbols_used": n_symbols_used,
+        "output_order": output_order,
+    }
