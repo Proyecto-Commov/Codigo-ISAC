@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from data.channel_estimator import (
+from isac.channel_estimator import (
     load_modulator_yaml,
     read_usrp_iq_bin,
     demodulate_ofdm_iq,
