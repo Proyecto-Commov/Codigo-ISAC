@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from channel_estimator import compute_channel_matrix_from_iq_paths
-from channel_features import extract_channel_matrix_features
+from Hugo.prototype3.channel_features import extract_channel_matrix_features
 
 
 # =============================================================================

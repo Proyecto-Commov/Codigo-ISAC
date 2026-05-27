@@ -1,0 +1,16 @@
+{
+    "bbdd_dir": "/home/hugo/Escritorio/ISAC/BBDD",
+    "yaml_path": "/home/hugo/Escritorio/ISAC/Codigo-ISAC/data/Modulator.yaml",
+    "output_dir": "/home/hugo/Escritorio/ISAC/Codigo-ISAC/Hugo/dataset_features_temperatura",
+    "n_symbols": null,
+    "start_sample_tx": 0,
+    "start_sample_rx": 0,
+    "storage_format_tx": "complex64",
+    "storage_format_rx": "complex64",
+    "max_samples_per_temperature": null,
+    "random_state": 42,
+    "split_mode": "stratified",
+    "train_frac": 0.7,
+    "val_frac": 0.15,
+    "test_frac": 0.15
+}

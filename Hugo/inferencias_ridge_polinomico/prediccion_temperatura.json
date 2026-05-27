@@ -1,0 +1,18 @@
+{
+  "temperature_pred": -14.383504935378056,
+  "unit": "degC",
+  "tx_path": "/home/hugo/Escritorio/ISAC/Codigo-ISAC/data/carton/templado/iq_tx_1.bin",
+  "rx_path": "/home/hugo/Escritorio/ISAC/Codigo-ISAC/data/carton/templado/iq_rx_1.bin",
+  "yaml_path": "/home/hugo/Escritorio/ISAC/Codigo-ISAC/data/Modulator.yaml",
+  "model_path": "/home/hugo/Escritorio/ISAC/Codigo-ISAC/Hugo/resultados_ridge_polinomica_grado2/modelo_ridge_polinomico_grado2.npz",
+  "alpha": 429.7004704320844,
+  "n_original_features_model": 58,
+  "n_polynomial_features_model": 1769,
+  "degree": 2,
+  "interaction_only": false,
+  "n_symbols_used": 100,
+  "fs_slow": 39062.5,
+  "symbol_duration": 2.56e-05,
+  "storage_format_tx": "auto",
+  "storage_format_rx": "auto"
+}
