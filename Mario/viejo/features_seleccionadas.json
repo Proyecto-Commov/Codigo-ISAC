@@ -1,0 +1,17 @@
+[
+  "mag_var",
+  "mag_energy_total",
+  "mag_min",
+  "mag_percentile_1",
+  "mag_dynamic_range_db",
+  "mag_entropy",
+  "mag_skewness",
+  "phase_circular_mean",
+  "phase_jump_m_max_abs",
+  "pdp_rms_delay_spread",
+  "svd_sigma_2",
+  "svd_sigma_ratio",
+  "dH_dt_mean",
+  "dH_dt_max",
+  "doppler_centroid"
+]
