@@ -13,12 +13,11 @@ ema_alpha = 0.95; % Factor para el filtro paso alto EMA [cite: 316]
 
 %% 2. Eliminación de Clutter Estático (Quitar DC)
 % Objetivo: Eliminar reflexiones de paredes y muebles (0 Hz Doppler).
-
 % Método A: Sustracción de la media (Filtro de cancelación de DC) 
-s_no_dc = s_diff - mean(s_diff);
+%s_no_dc = s_diff - mean(s_diff);
 
 % Método B: Diferencia de primer orden (Resalta cambios muy rápidos)
-% s_diff_filt = diff(s_diff); 
+s_no_dc = diff(s_diff); 
 
 %% 3. Filtrado de Paso Alto (EMA - Exponential Moving Average)
 % Objetivo: Eliminar imperfecciones de hardware (DC offset residual del USRP)[cite: 218, 221].
